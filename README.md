@@ -10,13 +10,21 @@ A very basic Snake game in C++ with SDL2. One codebase builds as a desktop app a
 
 Eat the red food to grow and score. Hitting a wall or yourself ends the game; the final score shows in the middle of the screen.
 
-## Desktop build
+## Desktop build in Visual Studio (Windows)
 
-Requires CMake 3.16+, a C++17 compiler, and SDL2 development files.
+You don't need to install SDL2 yourself. If CMake can't find it, it downloads and builds SDL2 automatically.
 
-- Ubuntu/Debian: `sudo apt install cmake g++ libsdl2-dev`
-- macOS (Homebrew): `brew install cmake sdl2`
-- Windows (vcpkg): `vcpkg install sdl2`, then pass `-DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake` to the configure step
+1. In the Visual Studio Installer, make sure the **Desktop development with C++** workload is installed. It includes the CMake tools and Git that the build uses.
+2. In Visual Studio, use **File > Open > Folder** and pick the `snake-slither` folder (the one containing `CMakeLists.txt`).
+3. Wait for the Output window to say CMake generation finished. The first time takes a minute or two while SDL2 downloads and builds.
+4. In the startup item dropdown on the toolbar (next to the green play button), choose **snake.exe**.
+5. Press **F5** (or Ctrl+F5 to run without the debugger).
+
+If CMake ever gets into a bad state, use **Project > Delete Cache and Reconfigure**.
+
+## Desktop build from the command line (any OS)
+
+Requires CMake 3.16+, a C++17 compiler and Git. SDL2 is used if installed (for example `sudo apt install libsdl2-dev` or `brew install sdl2`), otherwise it's downloaded automatically.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
