@@ -9,6 +9,10 @@ option(SNAKE_FETCH_SDL2 "Always download SDL2 instead of using an installed copy
 
 add_executable(snake src/main.cpp src/stb_image_impl.cpp)
 target_include_directories(snake PRIVATE third_party)
+if(WIN32)
+  # Red apple icon for snake.exe in Explorer and the taskbar.
+  target_sources(snake PRIVATE res/snake.rc)
+endif()
 
 if(EMSCRIPTEN)
   # Emscripten ships its own SDL2 port; output snake.html/.js/.wasm.

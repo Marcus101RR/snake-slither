@@ -334,6 +334,18 @@ bool ReadFile(const std::string& path, std::vector<unsigned char>* out) {
     return !out->empty();
 }
 
+// Uses one sheet frame, scaled up with hard pixel edges, as the window icon.
+void SetWindowIconFromFrame(SDL_Surface* sheet, int frame, int size) {
+    constexpr int kIconSize = 64;
+    SDL_Surface* icon = SDL_CreateRGBSurfaceWithFormat(0, kIconSize, kIconSize, 32, SDL_PIXELFORMAT_RGBA32);
+    if (!icon) return;
+    SDL_Rect src{frame * size, 0, size, size};
+    SDL_SetSurfaceBlendMode(sheet, SDL_BLENDMODE_NONE);
+    SDL_BlitScaled(sheet, &src, icon, nullptr);
+    SDL_SetWindowIcon(g.window, icon);
+    SDL_FreeSurface(icon);
+}
+
 // Loads the apple sheet from next to the executable (or the working directory),
 // or returns an error message naming where it looked.
 std::string LoadAppleSheet() {
@@ -368,6 +380,7 @@ std::string LoadAppleSheet() {
         SDL_CreateRGBSurfaceWithFormatFrom(pixels, w, h, 32, w * 4, SDL_PIXELFORMAT_RGBA32);
     if (surface) {
         g.appleSheet = SDL_CreateTextureFromSurface(g.renderer, surface);
+        SetWindowIconFromFrame(surface, kRed, h);
         SDL_FreeSurface(surface);
     }
     stbi_image_free(pixels);
