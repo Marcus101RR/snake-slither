@@ -157,7 +157,8 @@ void Reset() {
     g.apples.clear();
     g.applesSpawned = 0;
     g.spawnWaiting = false;
-    SpawnApple();  // start with one apple so the field is never empty at first
+    // Start with a full field; these count toward the run's 50 apples.
+    for (size_t i = 0; i < kMaxApplesOnField; ++i) SpawnApple();
     ScheduleNextSpawn(g.lastStep);
 }
 

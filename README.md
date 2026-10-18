@@ -8,7 +8,7 @@ A very basic Snake game in C++ with SDL2. One codebase builds as a desktop app a
 - Space or Enter: restart after game over
 - Esc: quit (desktop only)
 
-Apples appear one at a time every 3 to 6 seconds, up to 10 on the field and 50 per run. Red apples are worth 1 point, rare yellow ones (2 in 100) are worth 3, and very rare green ones (1 in 100) are worth 5. Each apple also grows the snake by one. Hitting a wall or yourself ends the run, as does eating all 50 apples; the final score shows in the middle of the screen.
+Each run starts with 10 apples on the field. After that, new ones appear one at a time every 3 to 6 seconds whenever there's room, up to 10 on the field and 50 per run. Red apples are worth 1 point, rare yellow ones (2 in 100) are worth 3, and very rare green ones (1 in 100) are worth 5. Each apple also grows the snake by one. Hitting a wall or yourself ends the run, as does eating all 50 apples; the final score shows in the middle of the screen.
 
 ## Desktop build in Visual Studio (Windows)
 
