@@ -18,12 +18,17 @@ namespace {
 
 constexpr int kWindowWidth = 1280;
 constexpr int kWindowHeight = 720;
-constexpr int kCellSize = 40;
-constexpr int kCols = kWindowWidth / kCellSize;   // 32
-constexpr int kRows = kWindowHeight / kCellSize;  // 18
-constexpr Uint32 kStepMs = 110;                   // snake moves one cell per step
-constexpr float kRadius = 15.0f;                  // half the snake's thickness
+constexpr int kCellSize = 20;
+constexpr int kCols = kWindowWidth / kCellSize;   // 64
+constexpr int kRows = kWindowHeight / kCellSize;  // 36
+constexpr Uint32 kStepMs = 220;                   // snake moves one cell per step
+constexpr float kRadius = 7.5f;                   // half the snake's thickness
 constexpr size_t kMaxQueuedTurns = 2;
+
+constexpr size_t kMaxApplesOnField = 10;
+constexpr int kMaxApplesPerRun = 50;
+constexpr Uint32 kSpawnMinMs = 3000;  // next apple appears 3 to 6 seconds after the last
+constexpr Uint32 kSpawnMaxMs = 6000;
 
 struct Point {
     int x;
@@ -52,8 +57,22 @@ constexpr char kApple[8][9] = {
     "02223300",
     "00202000",
 };
-constexpr SDL_Color kApplePalette[5] = {
-    {0, 0, 0, 0}, {0, 255, 0, 255}, {255, 0, 0, 255}, {195, 0, 0, 255}, {255, 255, 0, 255},
+enum AppleKind { kRed, kYellow, kGreen };
+
+struct AppleType {
+    int points;
+    SDL_Color palette[5];  // indexed by the sprite digits above
+};
+
+constexpr AppleType kAppleTypes[3] = {
+    {1, {{0, 0, 0, 0}, {0, 255, 0, 255}, {255, 0, 0, 255}, {195, 0, 0, 255}, {255, 255, 0, 255}}},
+    {3, {{0, 0, 0, 0}, {0, 255, 0, 255}, {255, 220, 0, 255}, {195, 150, 0, 255}, {255, 255, 210, 255}}},
+    {5, {{0, 0, 0, 0}, {120, 70, 20, 255}, {60, 230, 60, 255}, {0, 150, 0, 255}, {220, 255, 200, 255}}},
+};
+
+struct Apple {
+    Point cell;
+    AppleKind kind;
 };
 
 struct Game {
@@ -63,7 +82,10 @@ struct Game {
     Point prevTail{0, 0};     // cell the tail is sliding out of this step
     Point dir{1, 0};
     std::deque<Point> turns;  // queued direction changes, applied one per step
-    Point food{0, 0};
+    std::vector<Apple> apples;
+    int applesSpawned = 0;  // this run, capped at kMaxApplesPerRun
+    Uint32 nextSpawn = 0;
+    bool spawnWaiting = false;
     int score = 0;
     bool gameOver = false;
     bool running = true;
@@ -79,10 +101,48 @@ bool OnSnake(const Point& p) {
     return false;
 }
 
-void PlaceFood() {
+int AppleAt(const Point& p) {
+    for (size_t i = 0; i < g.apples.size(); ++i) {
+        if (g.apples[i].cell == p) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+AppleKind RollAppleKind() {
+    int roll = std::rand() % 100;
+    if (roll < 1) return kGreen;   // 1 in 100
+    if (roll < 3) return kYellow;  // 2 in 100
+    return kRed;
+}
+
+void SpawnApple() {
+    Point p;
     do {
-        g.food = {std::rand() % kCols, std::rand() % kRows};
-    } while (OnSnake(g.food));
+        p = {std::rand() % kCols, std::rand() % kRows};
+    } while (OnSnake(p) || AppleAt(p) >= 0);
+    g.apples.push_back({p, RollAppleKind()});
+    ++g.applesSpawned;
+}
+
+void ScheduleNextSpawn(Uint32 now) {
+    g.nextSpawn = now + kSpawnMinMs + std::rand() % (kSpawnMaxMs - kSpawnMinMs + 1);
+}
+
+// Spawns at most one apple per call; the timer only runs while there is room.
+void UpdateSpawns(Uint32 now) {
+    if (g.applesSpawned >= kMaxApplesPerRun) return;
+    if (g.apples.size() >= kMaxApplesOnField) {
+        g.spawnWaiting = true;  // field full: start a fresh 3-6s wait once there's room
+        return;
+    }
+    if (g.spawnWaiting) {
+        g.spawnWaiting = false;
+        ScheduleNextSpawn(now);
+    }
+    if (static_cast<Sint32>(now - g.nextSpawn) >= 0) {
+        SpawnApple();
+        ScheduleNextSpawn(now);
+    }
 }
 
 void Reset() {
@@ -94,7 +154,11 @@ void Reset() {
     g.score = 0;
     g.gameOver = false;
     g.lastStep = SDL_GetTicks();
-    PlaceFood();
+    g.apples.clear();
+    g.applesSpawned = 0;
+    g.spawnWaiting = false;
+    SpawnApple();  // start with one apple so the field is never empty at first
+    ScheduleNextSpawn(g.lastStep);
 }
 
 void QueueTurn(int dx, int dy) {
@@ -138,7 +202,8 @@ void Step() {
     Point head{g.snake.front().x + g.dir.x, g.snake.front().y + g.dir.y};
 
     bool hitWall = head.x < 0 || head.x >= kCols || head.y < 0 || head.y >= kRows;
-    bool eating = head == g.food;
+    int eaten = AppleAt(head);
+    bool eating = eaten >= 0;
     // The tail moves away this step unless we eat, so it is safe to enter.
     Point tail = g.snake.back();
     if (!eating) g.snake.pop_back();
@@ -151,12 +216,10 @@ void Step() {
     g.snake.push_front(head);
     g.prevTail = tail;  // when eating the tail stays put, so this is the tail itself
     if (eating) {
-        ++g.score;
-        if (static_cast<int>(g.snake.size()) == kCols * kRows) {
-            g.gameOver = true;  // board full: you win
-            return;
-        }
-        PlaceFood();
+        g.score += kAppleTypes[g.apples[eaten].kind].points;
+        g.apples.erase(g.apples.begin() + eaten);
+        // The run ends once all of its apples have been spawned and eaten.
+        if (g.applesSpawned >= kMaxApplesPerRun && g.apples.empty()) g.gameOver = true;
     }
 }
 
@@ -228,21 +291,21 @@ void DrawSnake(float t) {
     SetColor(0, 255, 0);
     DrawTube(path, kRadius, {0, 0});
     SetColor(0, 195, 0);
-    DrawTube(path, kRadius - 3, {2, 2});
+    DrawTube(path, kRadius - 1.5f, {1, 1});
 
     // Tail end: yellow rattle bands across the last stretch of the body.
     std::vector<Vec> fromTail(path.rbegin(), path.rend());
-    for (float d : {2.0f, 10.0f}) {
+    for (float d : {1.0f, 5.0f}) {
         Vec pos, dir;
         PointAlong(fromTail, d, &pos, &dir);
         Vec perp{-dir.y, dir.x};
-        float halfW = std::fabs(perp.x) * (kRadius - 1) + std::fabs(dir.x) * 2;
-        float halfH = std::fabs(perp.y) * (kRadius - 1) + std::fabs(dir.y) * 2;
+        float halfW = std::fabs(perp.x) * (kRadius - 0.5f) + std::fabs(dir.x) * 1;
+        float halfH = std::fabs(perp.y) * (kRadius - 0.5f) + std::fabs(dir.y) * 1;
         SetColor(195, 195, 0);
         FillRect(pos.x - halfW, pos.y - halfH, 2 * halfW, 2 * halfH);
         SetColor(255, 255, 0);
-        FillRect(pos.x - halfW + (perp.x != 0 ? 2 : 0), pos.y - halfH + (perp.y != 0 ? 2 : 0),
-                 perp.x != 0 ? 4 : 2 * halfW, perp.y != 0 ? 4 : 2 * halfH);
+        FillRect(pos.x - halfW + (perp.x != 0 ? 1 : 0), pos.y - halfH + (perp.y != 0 ? 1 : 0),
+                 perp.x != 0 ? 2 : 2 * halfW, perp.y != 0 ? 2 : 2 * halfH);
     }
 
     // Head: two red eyes near the front, looking where the snake is going.
@@ -251,23 +314,25 @@ void DrawSnake(float t) {
             static_cast<float>(g.snake[0].y - g.snake[1].y)};
     Vec perp{-dir.y, dir.x};
     for (float side : {-1.0f, 1.0f}) {
-        Vec eye{head.x + dir.x * 5 + perp.x * 7 * side, head.y + dir.y * 5 + perp.y * 7 * side};
+        Vec eye{head.x + dir.x * 2.5f + perp.x * 3.5f * side,
+                head.y + dir.y * 2.5f + perp.y * 3.5f * side};
         SetColor(255, 0, 0);
-        FillCircle(eye, 4.5f);
+        FillCircle(eye, 2.5f);
         SetColor(20, 0, 0);
-        FillCircle({eye.x + dir.x * 1.5f, eye.y + dir.y * 1.5f}, 2.0f);
+        FillCircle({eye.x + dir.x * 0.75f, eye.y + dir.y * 0.75f}, 1.0f);
     }
 }
 
-void DrawApple(const Point& cell) {
-    constexpr int kPixel = 4;  // 8x8 sprite drawn at 32x32 inside a 40px cell
+void DrawApple(const Apple& apple) {
+    constexpr int kPixel = 2;  // 8x8 sprite drawn at 16x16 inside a 20px cell
+    const Point& cell = apple.cell;
     int ox = cell.x * kCellSize + (kCellSize - 8 * kPixel) / 2;
     int oy = cell.y * kCellSize + (kCellSize - 8 * kPixel) / 2;
     for (int y = 0; y < 8; ++y) {
         for (int x = 0; x < 8; ++x) {
             int idx = kApple[y][x] - '0';
             if (idx == 0) continue;
-            const SDL_Color& c = kApplePalette[idx];
+            const SDL_Color& c = kAppleTypes[apple.kind].palette[idx];
             SetColor(c.r, c.g, c.b);
             FillRect(ox + x * kPixel, oy + y * kPixel, kPixel, kPixel);
         }
@@ -299,7 +364,7 @@ void Render() {
         t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
     }
 
-    DrawApple(g.food);
+    for (const Apple& a : g.apples) DrawApple(a);
     DrawSnake(t);
 
     SetColor(235, 235, 235);
@@ -322,6 +387,7 @@ void Render() {
 void Frame() {
     HandleEvents();
     Uint32 now = SDL_GetTicks();
+    if (!g.gameOver) UpdateSpawns(now);
     if (!g.gameOver && now - g.lastStep >= kStepMs) {
         g.lastStep += kStepMs;
         if (now - g.lastStep > kStepMs) g.lastStep = now;  // don't spiral after a stall
