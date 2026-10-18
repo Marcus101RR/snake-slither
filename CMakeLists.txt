@@ -1,0 +1,28 @@
+cmake_minimum_required(VERSION 3.16)
+project(SnakeSlither CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+add_executable(snake src/main.cpp)
+
+if(EMSCRIPTEN)
+  # Emscripten ships its own SDL2 port; output snake.html/.js/.wasm.
+  set(CMAKE_EXECUTABLE_SUFFIX ".html")
+  target_compile_options(snake PRIVATE -sUSE_SDL=2)
+  target_link_options(snake PRIVATE -sUSE_SDL=2 --shell-file ${CMAKE_SOURCE_DIR}/web/shell.html)
+else()
+  find_package(SDL2 REQUIRED)
+  if(TARGET SDL2::SDL2)
+    if(TARGET SDL2::SDL2main)
+      target_link_libraries(snake PRIVATE SDL2::SDL2main)
+    endif()
+    target_link_libraries(snake PRIVATE SDL2::SDL2)
+  else()
+    target_include_directories(snake PRIVATE ${SDL2_INCLUDE_DIRS})
+    target_link_libraries(snake PRIVATE ${SDL2_LIBRARIES})
+  endif()
+  if(MSVC)
+    set_target_properties(snake PROPERTIES WIN32_EXECUTABLE ON)
+  endif()
+endif()

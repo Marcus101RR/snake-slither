@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Snake Slither</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0d1015; }
+    body { display: flex; align-items: center; justify-content: center; }
+    canvas { width: min(100vw, calc(100vh * 16 / 9)); aspect-ratio: 16 / 9; display: block; outline: none; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+  <script>
+    var Module = { canvas: document.getElementById('canvas') };
+    // Keep arrow keys and space from scrolling the page.
+    window.addEventListener('keydown', function (e) {
+      if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].indexOf(e.key) >= 0) e.preventDefault();
+    });
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>
