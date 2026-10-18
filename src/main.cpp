@@ -3,10 +3,12 @@
 
 #include <SDL.h>
 
+#include <cmath>
 #include <cstdlib>
 #include <ctime>
 #include <deque>
 #include <string>
+#include <vector>
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -20,6 +22,8 @@ constexpr int kCellSize = 40;
 constexpr int kCols = kWindowWidth / kCellSize;   // 32
 constexpr int kRows = kWindowHeight / kCellSize;  // 18
 constexpr Uint32 kStepMs = 110;                   // snake moves one cell per step
+constexpr float kRadius = 15.0f;                  // half the snake's thickness
+constexpr size_t kMaxQueuedTurns = 2;
 
 struct Point {
     int x;
@@ -27,17 +31,38 @@ struct Point {
     bool operator==(const Point& o) const { return x == o.x && y == o.y; }
 };
 
+struct Vec {
+    float x;
+    float y;
+};
+
 // 3x5 bitmap digits, one row per 3 bits, so the score needs no font library.
 constexpr unsigned short kDigits[10] = {
     0x7B6F, 0x2C97, 0x73E7, 0x73CF, 0x5BC9, 0x79CF, 0x79EF, 0x7249, 0x7BEF, 0x7BCF,
+};
+
+// 8x8 apple sprite: 0 transparent, 1 leaf, 2 red, 3 dark red, 4 shine.
+constexpr char kApple[8][9] = {
+    "00001000",
+    "00011000",
+    "02312200",
+    "24332000",
+    "24222000",
+    "22422330",
+    "02223300",
+    "00202000",
+};
+constexpr SDL_Color kApplePalette[5] = {
+    {0, 0, 0, 0}, {0, 255, 0, 255}, {255, 0, 0, 255}, {195, 0, 0, 255}, {255, 255, 0, 255},
 };
 
 struct Game {
     SDL_Window* window = nullptr;
     SDL_Renderer* renderer = nullptr;
     std::deque<Point> snake;  // front is the head
+    Point prevTail{0, 0};     // cell the tail is sliding out of this step
     Point dir{1, 0};
-    Point nextDir{1, 0};
+    std::deque<Point> turns;  // queued direction changes, applied one per step
     Point food{0, 0};
     int score = 0;
     bool gameOver = false;
@@ -63,17 +88,21 @@ void PlaceFood() {
 void Reset() {
     g.snake.clear();
     for (int i = 0; i < 4; ++i) g.snake.push_back({kCols / 2 - i, kRows / 2});
-    g.dir = g.nextDir = {1, 0};
+    g.prevTail = {g.snake.back().x - 1, g.snake.back().y};
+    g.dir = {1, 0};
+    g.turns.clear();
     g.score = 0;
     g.gameOver = false;
     g.lastStep = SDL_GetTicks();
     PlaceFood();
 }
 
-void SetDirection(int dx, int dy) {
-    // Ignore reversing straight into the snake's own neck.
-    if (dx == -g.dir.x && dy == -g.dir.y) return;
-    g.nextDir = {dx, dy};
+void QueueTurn(int dx, int dy) {
+    if (g.turns.size() >= kMaxQueuedTurns) return;
+    Point last = g.turns.empty() ? g.dir : g.turns.back();
+    // Ignore repeats and reversing straight into the snake's own neck.
+    if ((dx == last.x && dy == last.y) || (dx == -last.x && dy == -last.y)) return;
+    g.turns.push_back({dx, dy});
 }
 
 void HandleEvents() {
@@ -81,12 +110,12 @@ void HandleEvents() {
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) {
             g.running = false;
-        } else if (e.type == SDL_KEYDOWN) {
+        } else if (e.type == SDL_KEYDOWN && !e.key.repeat) {
             switch (e.key.keysym.sym) {
-                case SDLK_UP: case SDLK_w: SetDirection(0, -1); break;
-                case SDLK_DOWN: case SDLK_s: SetDirection(0, 1); break;
-                case SDLK_LEFT: case SDLK_a: SetDirection(-1, 0); break;
-                case SDLK_RIGHT: case SDLK_d: SetDirection(1, 0); break;
+                case SDLK_UP: case SDLK_w: QueueTurn(0, -1); break;
+                case SDLK_DOWN: case SDLK_s: QueueTurn(0, 1); break;
+                case SDLK_LEFT: case SDLK_a: QueueTurn(-1, 0); break;
+                case SDLK_RIGHT: case SDLK_d: QueueTurn(1, 0); break;
                 case SDLK_SPACE: case SDLK_RETURN:
                     if (g.gameOver) Reset();
                     break;
@@ -102,7 +131,10 @@ void HandleEvents() {
 }
 
 void Step() {
-    g.dir = g.nextDir;
+    if (!g.turns.empty()) {
+        g.dir = g.turns.front();
+        g.turns.pop_front();
+    }
     Point head{g.snake.front().x + g.dir.x, g.snake.front().y + g.dir.y};
 
     bool hitWall = head.x < 0 || head.x >= kCols || head.y < 0 || head.y >= kRows;
@@ -117,6 +149,7 @@ void Step() {
     }
 
     g.snake.push_front(head);
+    g.prevTail = tail;  // when eating the tail stays put, so this is the tail itself
     if (eating) {
         ++g.score;
         if (static_cast<int>(g.snake.size()) == kCols * kRows) {
@@ -127,10 +160,118 @@ void Step() {
     }
 }
 
-void FillCell(const Point& p, int inset) {
-    SDL_Rect r{p.x * kCellSize + inset, p.y * kCellSize + inset, kCellSize - 2 * inset,
-               kCellSize - 2 * inset};
-    SDL_RenderFillRect(g.renderer, &r);
+// ---- Drawing helpers -------------------------------------------------------
+
+void SetColor(Uint8 r, Uint8 gr, Uint8 b) { SDL_SetRenderDrawColor(g.renderer, r, gr, b, 255); }
+
+void FillRect(float x, float y, float w, float h) {
+    SDL_FRect r{x, y, w, h};
+    SDL_RenderFillRectF(g.renderer, &r);
+}
+
+void FillCircle(Vec c, float radius) {
+    for (float dy = -radius + 0.5f; dy < radius; dy += 1.0f) {
+        float half = std::sqrt(radius * radius - dy * dy);
+        FillRect(c.x - half, c.y + dy - 0.5f, 2 * half, 1.0f);
+    }
+}
+
+Vec CellCenter(const Point& p) {
+    return {p.x * kCellSize + kCellSize / 2.0f, p.y * kCellSize + kCellSize / 2.0f};
+}
+
+Vec Lerp(Vec a, Vec b, float t) { return {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t}; }
+
+// Draws a rounded tube through axis-aligned points. Every snake segment is
+// horizontal or vertical, so rectangles plus round joints are enough.
+void DrawTube(const std::vector<Vec>& pts, float radius, Vec offset) {
+    for (size_t i = 0; i + 1 < pts.size(); ++i) {
+        Vec a{pts[i].x + offset.x, pts[i].y + offset.y};
+        Vec b{pts[i + 1].x + offset.x, pts[i + 1].y + offset.y};
+        float x0 = std::fmin(a.x, b.x), x1 = std::fmax(a.x, b.x);
+        float y0 = std::fmin(a.y, b.y), y1 = std::fmax(a.y, b.y);
+        if (y0 == y1)
+            FillRect(x0, y0 - radius, x1 - x0, 2 * radius);
+        else
+            FillRect(x0 - radius, y0, 2 * radius, y1 - y0);
+    }
+    for (const Vec& p : pts) FillCircle({p.x + offset.x, p.y + offset.y}, radius);
+}
+
+// Point and unit direction at `dist` pixels along the path from its start.
+void PointAlong(const std::vector<Vec>& pts, float dist, Vec* pos, Vec* dir) {
+    for (size_t i = 0; i + 1 < pts.size(); ++i) {
+        Vec a = pts[i], b = pts[i + 1];
+        float len = std::fabs(b.x - a.x) + std::fabs(b.y - a.y);
+        if (len <= 0.0f) continue;
+        *dir = {(b.x - a.x) / len, (b.y - a.y) / len};
+        if (dist <= len || i + 2 == pts.size()) {
+            *pos = {a.x + dir->x * dist, a.y + dir->y * dist};
+            return;
+        }
+        dist -= len;
+    }
+    *pos = pts.front();
+    *dir = {1, 0};
+}
+
+void DrawSnake(float t) {
+    // The head glides from the previous cell into the new one, and the tail
+    // glides out of the cell it is leaving, so turns only happen at cell centers.
+    std::vector<Vec> path;
+    path.push_back(Lerp(CellCenter(g.snake[1]), CellCenter(g.snake[0]), t));
+    for (size_t i = 1; i < g.snake.size(); ++i) path.push_back(CellCenter(g.snake[i]));
+    path.push_back(Lerp(CellCenter(g.prevTail), CellCenter(g.snake.back()), t));
+
+    // Bright tube underneath, darker tube nudged down-right on top, which
+    // leaves a highlight along the top and left edges like the reference art.
+    SetColor(0, 255, 0);
+    DrawTube(path, kRadius, {0, 0});
+    SetColor(0, 195, 0);
+    DrawTube(path, kRadius - 3, {2, 2});
+
+    // Tail end: yellow rattle bands across the last stretch of the body.
+    std::vector<Vec> fromTail(path.rbegin(), path.rend());
+    for (float d : {2.0f, 10.0f}) {
+        Vec pos, dir;
+        PointAlong(fromTail, d, &pos, &dir);
+        Vec perp{-dir.y, dir.x};
+        float halfW = std::fabs(perp.x) * (kRadius - 1) + std::fabs(dir.x) * 2;
+        float halfH = std::fabs(perp.y) * (kRadius - 1) + std::fabs(dir.y) * 2;
+        SetColor(195, 195, 0);
+        FillRect(pos.x - halfW, pos.y - halfH, 2 * halfW, 2 * halfH);
+        SetColor(255, 255, 0);
+        FillRect(pos.x - halfW + (perp.x != 0 ? 2 : 0), pos.y - halfH + (perp.y != 0 ? 2 : 0),
+                 perp.x != 0 ? 4 : 2 * halfW, perp.y != 0 ? 4 : 2 * halfH);
+    }
+
+    // Head: two red eyes near the front, looking where the snake is going.
+    Vec head = path.front();
+    Vec dir{static_cast<float>(g.snake[0].x - g.snake[1].x),
+            static_cast<float>(g.snake[0].y - g.snake[1].y)};
+    Vec perp{-dir.y, dir.x};
+    for (float side : {-1.0f, 1.0f}) {
+        Vec eye{head.x + dir.x * 5 + perp.x * 7 * side, head.y + dir.y * 5 + perp.y * 7 * side};
+        SetColor(255, 0, 0);
+        FillCircle(eye, 4.5f);
+        SetColor(20, 0, 0);
+        FillCircle({eye.x + dir.x * 1.5f, eye.y + dir.y * 1.5f}, 2.0f);
+    }
+}
+
+void DrawApple(const Point& cell) {
+    constexpr int kPixel = 4;  // 8x8 sprite drawn at 32x32 inside a 40px cell
+    int ox = cell.x * kCellSize + (kCellSize - 8 * kPixel) / 2;
+    int oy = cell.y * kCellSize + (kCellSize - 8 * kPixel) / 2;
+    for (int y = 0; y < 8; ++y) {
+        for (int x = 0; x < 8; ++x) {
+            int idx = kApple[y][x] - '0';
+            if (idx == 0) continue;
+            const SDL_Color& c = kApplePalette[idx];
+            SetColor(c.r, c.g, c.b);
+            FillRect(ox + x * kPixel, oy + y * kPixel, kPixel, kPixel);
+        }
+    }
 }
 
 void DrawNumber(int value, int x, int y, int pixel) {
@@ -140,8 +281,7 @@ void DrawNumber(int value, int x, int y, int pixel) {
         for (int row = 0; row < 5; ++row) {
             for (int col = 0; col < 3; ++col) {
                 if (bits & (1 << (14 - (row * 3 + col)))) {
-                    SDL_Rect r{x + col * pixel, y + row * pixel, pixel, pixel};
-                    SDL_RenderFillRect(g.renderer, &r);
+                    FillRect(x + col * pixel, y + row * pixel, pixel, pixel);
                 }
             }
         }
@@ -150,38 +290,29 @@ void DrawNumber(int value, int x, int y, int pixel) {
 }
 
 void Render() {
-    SDL_SetRenderDrawColor(g.renderer, 18, 22, 28, 255);
+    SDL_SetRenderDrawColor(g.renderer, 0, 0, 0, 255);
     SDL_RenderClear(g.renderer);
 
-    // Subtle checkerboard so the grid is readable.
-    SDL_SetRenderDrawColor(g.renderer, 24, 29, 37, 255);
-    for (int y = 0; y < kRows; ++y)
-        for (int x = 0; x < kCols; ++x)
-            if ((x + y) % 2 == 0) FillCell({x, y}, 0);
-
-    SDL_SetRenderDrawColor(g.renderer, 230, 70, 70, 255);
-    FillCell(g.food, 8);
-
-    for (size_t i = 0; i < g.snake.size(); ++i) {
-        if (i == 0)
-            SDL_SetRenderDrawColor(g.renderer, 140, 230, 120, 255);
-        else
-            SDL_SetRenderDrawColor(g.renderer, 80, 190, 90, 255);
-        FillCell(g.snake[i], 2);
+    float t = 1.0f;
+    if (!g.gameOver) {
+        t = static_cast<float>(SDL_GetTicks() - g.lastStep) / kStepMs;
+        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
     }
 
-    SDL_SetRenderDrawColor(g.renderer, 235, 235, 235, 255);
+    DrawApple(g.food);
+    DrawSnake(t);
+
+    SetColor(235, 235, 235);
     DrawNumber(g.score, 16, 16, 6);
 
     if (g.gameOver) {
         SDL_SetRenderDrawBlendMode(g.renderer, SDL_BLENDMODE_BLEND);
         SDL_SetRenderDrawColor(g.renderer, 0, 0, 0, 160);
-        SDL_Rect full{0, 0, kWindowWidth, kWindowHeight};
-        SDL_RenderFillRect(g.renderer, &full);
+        FillRect(0, 0, kWindowWidth, kWindowHeight);
         // Big final score in the middle; Space or Enter restarts.
         int pixel = 24;
         int width = static_cast<int>(std::to_string(g.score).size()) * 4 * pixel - pixel;
-        SDL_SetRenderDrawColor(g.renderer, 235, 235, 235, 255);
+        SetColor(235, 235, 235);
         DrawNumber(g.score, (kWindowWidth - width) / 2, (kWindowHeight - 5 * pixel) / 2, pixel);
     }
 
