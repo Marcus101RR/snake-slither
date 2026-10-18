@@ -48,5 +48,13 @@ Then open http://localhost:8000/snake.html. The page must be served over HTTP; o
 ## Layout
 
 - `src/main.cpp`: the whole game (input, update, rendering)
+- `assets/Item_Apples.png`: apple sprite sheet (see below)
+- `third_party/stb_image.h`: public-domain PNG loader ([stb](https://github.com/nothings/stb))
 - `web/shell.html`: the HTML page template used by the browser build
 - `CMakeLists.txt`: build for both targets
+
+## Sprites
+
+`assets/Item_Apples.png` holds the apples as square frames from left to right: red, yellow, green. Each frame is as tall as the sheet, so the current 24x8 sheet has three 8x8 frames. You can redraw them at any size (for example a 48x16 sheet of 16x16 apples) without changing code; they are always drawn 16x16 on screen with crisp pixel edges.
+
+The build copies `assets/` next to the executable, and the browser build packs it into `snake.data`, which must be served alongside `snake.html`.

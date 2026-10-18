@@ -3,6 +3,8 @@
 
 #include <SDL.h>
 
+#include "stb_image.h"
+
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
@@ -46,29 +48,14 @@ constexpr unsigned short kDigits[10] = {
     0x7B6F, 0x2C97, 0x73E7, 0x73CF, 0x5BC9, 0x79CF, 0x79EF, 0x7249, 0x7BEF, 0x7BCF,
 };
 
-// 8x8 apple sprite: 0 transparent, 1 leaf, 2 red, 3 dark red, 4 shine.
-constexpr char kApple[8][9] = {
-    "00001000",
-    "00011000",
-    "02312200",
-    "24332000",
-    "24222000",
-    "22422330",
-    "02223300",
-    "00202000",
-};
-enum AppleKind { kRed, kYellow, kGreen };
+// Apple sprite sheet: square frames left to right, one per AppleKind, each as
+// tall as the sheet. Redrawing at a larger size needs no code change.
+constexpr const char* kAppleSheetPath = "assets/Item_Apples.png";
+constexpr int kAppleDrawSize = 16;  // on-screen size inside a 20px cell
 
-struct AppleType {
-    int points;
-    SDL_Color palette[5];  // indexed by the sprite digits above
-};
+enum AppleKind { kRed, kYellow, kGreen, kAppleKindCount };
 
-constexpr AppleType kAppleTypes[3] = {
-    {1, {{0, 0, 0, 0}, {0, 255, 0, 255}, {255, 0, 0, 255}, {195, 0, 0, 255}, {255, 255, 0, 255}}},
-    {3, {{0, 0, 0, 0}, {0, 255, 0, 255}, {255, 220, 0, 255}, {195, 150, 0, 255}, {255, 255, 210, 255}}},
-    {5, {{0, 0, 0, 0}, {120, 70, 20, 255}, {60, 230, 60, 255}, {0, 150, 0, 255}, {220, 255, 200, 255}}},
-};
+constexpr int kApplePoints[kAppleKindCount] = {1, 3, 5};
 
 struct Apple {
     Point cell;
@@ -78,6 +65,8 @@ struct Apple {
 struct Game {
     SDL_Window* window = nullptr;
     SDL_Renderer* renderer = nullptr;
+    SDL_Texture* appleSheet = nullptr;
+    int appleFrame = 0;  // frame width and height in the sheet, in pixels
     std::deque<Point> snake;  // front is the head
     Point prevTail{0, 0};     // cell the tail is sliding out of this step
     Point dir{1, 0};
@@ -217,7 +206,7 @@ void Step() {
     g.snake.push_front(head);
     g.prevTail = tail;  // when eating the tail stays put, so this is the tail itself
     if (eating) {
-        g.score += kAppleTypes[g.apples[eaten].kind].points;
+        g.score += kApplePoints[g.apples[eaten].kind];
         g.apples.erase(g.apples.begin() + eaten);
         // The run ends once all of its apples have been spawned and eaten.
         if (g.applesSpawned >= kMaxApplesPerRun && g.apples.empty()) g.gameOver = true;
@@ -325,19 +314,67 @@ void DrawSnake(float t) {
 }
 
 void DrawApple(const Apple& apple) {
-    constexpr int kPixel = 2;  // 8x8 sprite drawn at 16x16 inside a 20px cell
-    const Point& cell = apple.cell;
-    int ox = cell.x * kCellSize + (kCellSize - 8 * kPixel) / 2;
-    int oy = cell.y * kCellSize + (kCellSize - 8 * kPixel) / 2;
-    for (int y = 0; y < 8; ++y) {
-        for (int x = 0; x < 8; ++x) {
-            int idx = kApple[y][x] - '0';
-            if (idx == 0) continue;
-            const SDL_Color& c = kAppleTypes[apple.kind].palette[idx];
-            SetColor(c.r, c.g, c.b);
-            FillRect(ox + x * kPixel, oy + y * kPixel, kPixel, kPixel);
-        }
+    SDL_Rect src{apple.kind * g.appleFrame, 0, g.appleFrame, g.appleFrame};
+    SDL_Rect dst{apple.cell.x * kCellSize + (kCellSize - kAppleDrawSize) / 2,
+                 apple.cell.y * kCellSize + (kCellSize - kAppleDrawSize) / 2, kAppleDrawSize,
+                 kAppleDrawSize};
+    SDL_RenderCopy(g.renderer, g.appleSheet, &src, &dst);
+}
+
+// Reads the whole file through SDL so UTF-8 paths work on every platform.
+bool ReadFile(const std::string& path, std::vector<unsigned char>* out) {
+    SDL_RWops* rw = SDL_RWFromFile(path.c_str(), "rb");
+    if (!rw) return false;
+    Sint64 size = SDL_RWsize(rw);
+    if (size > 0) {
+        out->resize(static_cast<size_t>(size));
+        if (SDL_RWread(rw, out->data(), 1, out->size()) != out->size()) out->clear();
     }
+    SDL_RWclose(rw);
+    return !out->empty();
+}
+
+// Loads the apple sheet from next to the executable (or the working directory),
+// or returns an error message naming where it looked.
+std::string LoadAppleSheet() {
+    std::vector<std::string> candidates;
+#ifndef __EMSCRIPTEN__
+    if (char* base = SDL_GetBasePath()) {
+        candidates.push_back(std::string(base) + kAppleSheetPath);
+        SDL_free(base);
+    }
+#endif
+    candidates.push_back(kAppleSheetPath);
+
+    std::vector<unsigned char> file;
+    std::string tried;
+    for (const std::string& path : candidates) {
+        if (ReadFile(path, &file)) break;
+        tried += "\n  " + path;
+    }
+    if (file.empty()) return "Could not find the apple sprite sheet. Looked in:" + tried;
+
+    int w = 0, h = 0, channels = 0;
+    unsigned char* pixels =
+        stbi_load_from_memory(file.data(), static_cast<int>(file.size()), &w, &h, &channels, 4);
+    if (!pixels) return std::string("Could not read ") + kAppleSheetPath + ": " + stbi_failure_reason();
+    if (h <= 0 || w < h * kAppleKindCount) {
+        stbi_image_free(pixels);
+        return std::string(kAppleSheetPath) + " must hold " + std::to_string(kAppleKindCount) +
+               " square frames side by side (e.g. 24x8).";
+    }
+
+    SDL_Surface* surface =
+        SDL_CreateRGBSurfaceWithFormatFrom(pixels, w, h, 32, w * 4, SDL_PIXELFORMAT_RGBA32);
+    if (surface) {
+        g.appleSheet = SDL_CreateTextureFromSurface(g.renderer, surface);
+        SDL_FreeSurface(surface);
+    }
+    stbi_image_free(pixels);
+    if (!g.appleSheet) return std::string("Could not create apple texture: ") + SDL_GetError();
+    SDL_SetTextureBlendMode(g.appleSheet, SDL_BLENDMODE_BLEND);
+    g.appleFrame = h;
+    return "";
 }
 
 void DrawNumber(int value, int x, int y, int pixel) {
@@ -420,6 +457,15 @@ int main(int, char**) {
         return 1;
     }
 
+    // Keep pixel art crisp when sprites are scaled up.
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
+    std::string error = LoadAppleSheet();
+    if (!error.empty()) {
+        SDL_Log("%s", error.c_str());
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Snake Slither", error.c_str(), g.window);
+        return 1;
+    }
+
     std::srand(static_cast<unsigned>(std::time(nullptr)));
     Reset();
 
@@ -432,6 +478,7 @@ int main(int, char**) {
     }
 #endif
 
+    SDL_DestroyTexture(g.appleSheet);
     SDL_DestroyRenderer(g.renderer);
     SDL_DestroyWindow(g.window);
     SDL_Quit();
